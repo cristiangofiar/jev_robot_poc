@@ -6,6 +6,18 @@ from random import Random
 from .base import Action, Decision, Observation
 
 
+class ThresholdBrain:
+    """The original simple, deterministic WAIT/CONTINUE baseline."""
+    name, version = "threshold", "1"
+
+    def __init__(self, stop_distance_m: float):
+        self.stop_distance_m = stop_distance_m
+
+    def decide(self, observation: Observation) -> Decision:
+        distance = observation.front_distance
+        return Decision(Action.WAIT if distance is None or distance < self.stop_distance_m else Action.CONTINUE, self.name)
+
+
 class RuleBasedBrain:
     name = "rules"
     version = "3"
@@ -27,7 +39,7 @@ class RuleBasedBrain:
     def decide(self, observation: Observation) -> Decision:
         distance = observation.front_distance
         if distance is None:
-            return Decision(Action.STOP, self.name)
+            return Decision(Action.WAIT, self.name)
 
         if self.action == Action.BACK_UP:
             if self.remaining == 0:

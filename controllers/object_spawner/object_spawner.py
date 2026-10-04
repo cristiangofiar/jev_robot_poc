@@ -7,6 +7,7 @@ import sys
 from dataclasses import asdict
 from math import dist
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,10 +53,57 @@ def shared_contact_points(robot_points: list, box_points: list) -> list[list[flo
             if any(dist(point.point, other.point) <= 1e-6 for other in robot_points)]
 
 
+def finish_batch(supervisor, config, logger):
+    """Quit only after both writers finished; the runner handles abnormal termination."""
+    deadline = monotonic() + 10
+    complete = False
+    while logger is not None and monotonic() < deadline:
+        # Last record is small, even when sensor/decision records are much larger.
+        with (logger.directory / "steps.jsonl").open("rb") as file:
+            file.seek(max(0, file.seek(0, 2) - 8192))
+            lines = file.read().splitlines()
+        try:
+            end = json.loads(lines[-1]) if lines else {}
+        except json.JSONDecodeError:
+            end = {}
+        if end.get("record_type") == "run_end" and end.get("run_id") == logger.run_id:
+            complete = end.get("status") == "duration_reached" and end.get("stop_command_flushed") is True
+            break
+        if supervisor.step(config.timestep_ms) == -1:
+            break
+    supervisor.simulationQuit(0 if complete else 1)
+
+
+def run_static_batch(supervisor, config, root):
+    receiver = require_device(supervisor, "experiment lifecycle")
+    receiver.enable(config.timestep_ms)
+    logger = None
+    status = "duration_reached"
+    while supervisor.getTime() < config.max_simulation_time_s:
+        if supervisor.step(config.timestep_ms) == -1:
+            status = "simulator_ended"
+            break
+        while receiver.getQueueLength():
+            message = json.loads(receiver.getString())
+            receiver.nextPacket()
+            if logger is not None:
+                raise ValueError("Duplicate cleaner metadata")
+            logger = attach_run(root, config, message)
+            logger.write("scenario_start", scenario=None, simulation_time_s=supervisor.getTime())
+    if logger:
+        logger.write("scenario_end", status=status, simulation_time_s=supervisor.getTime(),
+                     event_released=False, outcome="unscored", collision_with_spawned_object=None)
+        logger.close()
+    finish_batch(supervisor, config, logger)
+    return logger.directory if logger else None
+
+
 def run(supervisor: Any, config: Config, root: Path = ROOT) -> Path | None:
     validate_world(supervisor, config, root)
     scenario = FallingBoxScenario.load(root, config)
     if scenario is None:
+        if config.batch_mode:
+            return run_static_batch(supervisor, config, root)
         return None  # Static apartment: do not manipulate the world or require metadata.
     robot = supervisor.getFromDef("CLEANER")
     if robot is None:
@@ -168,6 +216,8 @@ def run(supervisor: Any, config: Config, root: Path = ROOT) -> Path | None:
         finally:
             if logger is not None:
                 logger.close()
+    if config.batch_mode:
+        finish_batch(supervisor, config, logger)
     return logger.directory if logger is not None else None
 
 
@@ -177,7 +227,13 @@ def main() -> None:
     args = parser.parse_args()
     config = Config.load(args.config if args.config.is_absolute() else ROOT / args.config)
     from controller import Supervisor
-    run(Supervisor(), config)
+    supervisor = Supervisor()
+    try:
+        run(supervisor, config)
+    except BaseException:
+        if config.batch_mode:
+            supervisor.simulationQuit(1)
+        raise
 
 
 if __name__ == "__main__":

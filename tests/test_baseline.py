@@ -95,8 +95,27 @@ class BaselineChecks(unittest.TestCase):
             self.assertNotEqual(first.run_id, second.run_id)
             self.assertEqual(json.loads((first.directory / "steps.jsonl").read_text())["value"], 1)
 
+    def test_history_is_bounded_and_wait_duration_tracks_applied_action(self):
+        seen = []
+        def decide(observation):
+            seen.append(observation)
+            return Decision(Action.WAIT if len(seen) <= 3 else Action.CONTINUE, "history")
+        brain = SimpleNamespace(name="history", version="test", decide=decide)
+        with tempfile.TemporaryDirectory() as directory:
+            self.recorded_run(FakeRobot([1.0] * 60), directory, brain=brain)
+        self.assertEqual(seen[0].decision_history, ())
+        self.assertEqual(len(seen[-1].decision_history), 10)
+        self.assertEqual(len(seen[3].decision_history), 3)
+        self.assertGreater(seen[3].waiting_duration_s, 0)
+        self.assertEqual(seen[4].waiting_duration_s, 0)
+        self.assertEqual(seen[-1].decision_history[-1]["requested"], "CONTINUE")
+        self.assertTrue(all(item["accepted"] for item in seen[-1].decision_history))
+        restored = Observation.from_dict(json.loads(json.dumps(seen[-1].to_dict())))
+        self.assertEqual(restored, seen[-1])
+        self.assertEqual(len(seen[3].decision_history), 3)  # Old snapshots stay unchanged.
+
     def test_typed_offline_observation_and_baseline(self):
-        for distance, expected in ((0.449, Action.CONTINUE), (0.45, Action.CONTINUE), (None, Action.STOP)):
+        for distance, expected in ((0.449, Action.CONTINUE), (0.45, Action.CONTINUE), (None, Action.WAIT)):
             observation = Observation(0.2, distance, None, None, Action.CONTINUE)
             restored = Observation.from_dict(json.loads(json.dumps(observation.to_dict())))
             self.assertEqual(restored, observation)
@@ -106,7 +125,7 @@ class BaselineChecks(unittest.TestCase):
         with self.assertRaises(ValueError):
             Decision("CONTINUE", "bad")
         with self.assertRaises(ValueError):
-            Decision(Action.STOP, "bad", confidence=float("nan"))
+            Decision(Action.WAIT, "bad", confidence=float("nan"))
 
     def test_contact_recovery_without_periodic_turns(self):
         clear = Observation(0.2, 1.0, False, False, Action.CONTINUE, contact_detected=False)
@@ -127,17 +146,17 @@ class BaselineChecks(unittest.TestCase):
         other = RuleBasedBrain(0.45, seed=1)
         self.assertNotEqual(actions, [other.decide(contact).action] +
                             [other.decide(clear).action for _ in range(150)])
-        self.assertEqual(brain.decide(replace(clear, front_distance=None)).action, Action.STOP)
+        self.assertEqual(brain.decide(replace(clear, front_distance=None)).action, Action.WAIT)
 
         safety = SafetyLayer(0.12, 0.16)
         state = SensorState(0, 0.05, 0, None, True, False)
-        self.assertEqual(safety.apply(Action.CONTINUE, state).action, Action.STOP)
+        self.assertEqual(safety.apply(Action.CONTINUE, state).action, Action.WAIT)
         self.assertEqual(safety.apply(Action.BACK_UP, state).action, Action.BACK_UP)
-        self.assertEqual(safety.apply(Action.TURN_LEFT, state).action, Action.STOP)
+        self.assertEqual(safety.apply(Action.TURN_LEFT, state).action, Action.WAIT)
         self.assertEqual(safety.apply(Action.TURN_LEFT, replace(state, bumper_left=False)).action,
                          Action.TURN_LEFT)
         self.assertEqual(safety.apply(Action.BACK_UP, replace(state, bumper_right=None)).action,
-                         Action.STOP)
+                         Action.WAIT)
         with tempfile.TemporaryDirectory() as directory:
             robot = FakeRobot([1.0] * 250)
             robot.devices["bumper_left"].getValue = lambda: float(robot.index < 8)
@@ -156,7 +175,7 @@ class BaselineChecks(unittest.TestCase):
             path, records = self.recorded_run(robot, directory)
             steps = [record for record in records if record["record_type"] == "step"]
             self.assertEqual([step["applied_action"] for step in steps],
-                             ["CONTINUE", "CONTINUE", "STOP", "CONTINUE", "CONTINUE"])
+                             ["CONTINUE", "CONTINUE", "WAIT", "CONTINUE", "CONTINUE"])
             self.assertEqual(steps[1]["requested_action"], "CONTINUE")
             self.assertTrue(steps[2]["safety_override"])
             self.assertEqual(steps[2]["safety_reason"], "bumper_contact")
@@ -198,7 +217,7 @@ class BaselineChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             _, records = self.recorded_run(FakeRobot([float("nan")]), directory)
             self.assertIsNone(records[1]["sensors"]["front_distance_m"])
-            self.assertEqual(records[1]["applied_action"], "STOP")
+            self.assertEqual(records[1]["applied_action"], "WAIT")
 
     def test_adapter_error_and_unserializable_output_fall_back_to_stop(self):
         for bad_decide in (
@@ -209,7 +228,7 @@ class BaselineChecks(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 brain = SimpleNamespace(name="bad", version="test", decide=bad_decide)
                 _, records = self.recorded_run(FakeRobot([1.0]), directory, brain)
-                self.assertEqual(records[1]["applied_action"], "STOP")
+                self.assertEqual(records[1]["applied_action"], "WAIT")
                 self.assertTrue(records[1]["decision"]["metadata"]["fallback"])
                 self.assertEqual(records[-1]["fallback_count"], 1)
 
@@ -253,7 +272,7 @@ class BaselineChecks(unittest.TestCase):
         self.assertEqual(set(actuators.commands), set(Action))
         self.assertLess(actuators.apply(Action.TURN_LEFT)[0], 0)
         self.assertGreater(actuators.apply(Action.TURN_LEFT)[1], 0)
-        self.assertEqual(actuators.apply(Action.REPLAN), (0, 0))
+        self.assertEqual(actuators.apply(Action.WAIT), (0, 0))
 
 
 if __name__ == "__main__":

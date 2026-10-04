@@ -23,10 +23,15 @@ class Config:
     max_simulation_time_s: float = 20.0
     results_dir: str = "results/raw"
     stop_before_contact: bool = False
+    decision_timeout_s: float = 3.0
+    max_decision_age_s: float = 2.0
+    batch_mode: bool = False
 
     def __post_init__(self) -> None:
-        if self.brain != "rules":
-            raise ValueError("Only the rules brain is implemented in this iteration")
+        if self.brain not in ("rules", "threshold", "kev", "laya", "jev"):
+            raise ValueError("Unknown brain")
+        if type(self.batch_mode) is not bool:
+            raise ValueError("batch_mode must be a bool")
         if type(self.stop_before_contact) is not bool:
             raise ValueError("stop_before_contact must be a bool")
         for name in ("experiment_id", "scenario_id", "results_dir"):
@@ -43,6 +48,7 @@ class Config:
             "forward_speed_m_s", "turn_wheel_speed_rad_s", "wheel_radius_m",
             "stop_distance_m", "critical_distance_m", "safety_release_distance_m",
             "max_simulation_time_s",
+            "decision_timeout_s", "max_decision_age_s",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isfinite(value) or value <= 0:

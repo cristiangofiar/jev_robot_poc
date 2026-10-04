@@ -40,6 +40,11 @@ class RunLogger:
         paths += sorted((root / "controllers").rglob("*.py"))
         paths += sorted((root / "experiment").rglob("*.py"))
         paths += sorted((root / "experiment/scenarios").glob("*.json"))
+        paths += sorted((root / "controllers/cleaner/brains/prompts").glob("*.json"))
+        paths += sorted(root.glob("*.py"))
+        manifest = root / ".local_models/manifest.json"
+        if manifest.is_file():
+            paths.append(manifest)
         hashes = {}
         for path in paths:
             relative = path.relative_to(root)

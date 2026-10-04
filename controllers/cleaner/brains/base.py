@@ -9,12 +9,10 @@ from typing import Any, Protocol
 class Action(str, Enum):
     CONTINUE = "CONTINUE"
     SLOW_DOWN = "SLOW_DOWN"
-    STOP = "STOP"
     TURN_LEFT = "TURN_LEFT"
     TURN_RIGHT = "TURN_RIGHT"
     BACK_UP = "BACK_UP"
     WAIT = "WAIT"
-    REPLAN = "REPLAN"
 
 
 @dataclass(frozen=True)
@@ -26,11 +24,14 @@ class Observation:
     current_action: Action
     goal: str = "continue cleaning"
     contact_detected: bool | None = None
+    simulation_time_s: float = 0.0
+    waiting_duration_s: float = 0.0
+    decision_history: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.current_action, Action):
             raise ValueError("current_action must be an Action")
-        for value in (self.robot_speed, self.front_distance):
+        for value in (self.robot_speed, self.front_distance, self.simulation_time_s, self.waiting_duration_s):
             if value is not None and (
                 isinstance(value, bool) or not isfinite(value) or value < 0
             ):
@@ -38,6 +39,8 @@ class Observation:
         for value in (self.object_detected, self.path_blocked, self.contact_detected):
             if value is not None and not isinstance(value, bool):
                 raise ValueError("perception flags must be bool or None")
+        if len(self.decision_history) > 10 or any(not isinstance(item, dict) for item in self.decision_history):
+            raise ValueError("decision_history must contain at most 10 records")
         if not isinstance(self.goal, str):
             raise ValueError("goal must be a string")
 
@@ -46,7 +49,8 @@ class Observation:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Observation":
-        return cls(**{**data, "current_action": Action(data["current_action"])})
+        return cls(**{**data, "current_action": Action(data["current_action"]),
+                      "decision_history": tuple(data.get("decision_history", ()))})
 
 
 @dataclass(frozen=True)
@@ -65,7 +69,7 @@ class Decision:
         if not isfinite(self.latency_ms) or self.latency_ms < 0:
             raise ValueError("latency_ms must be finite and nonnegative")
         if self.confidence is not None and (
-            not isfinite(self.confidence) or not 0 <= self.confidence <= 1
+            isinstance(self.confidence, bool) or not isfinite(self.confidence) or not 0 <= self.confidence <= 1
         ):
             raise ValueError("confidence must be in [0, 1] or None")
         if self.probabilities is not None:
@@ -81,4 +85,3 @@ class Brain(Protocol):
     version: str
 
     def decide(self, observation: Observation) -> Decision: ...
-

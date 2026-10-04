@@ -126,7 +126,7 @@ class ScenarioChecks(unittest.TestCase):
                         self.assertNotIn("scenario_id", record["model_input"])
                         self.assertNotIn("event_time_s", record["model_input"])
                 self.assertEqual(cleaner_records[-2]["requested_action"], "CONTINUE")
-                self.assertEqual(cleaner_records[-2]["applied_action"], "STOP")
+                self.assertEqual(cleaner_records[-2]["applied_action"], "WAIT")
                 supervisors.append(supervisor)
             self.assertEqual(supervisors[0].imports, supervisors[1].imports)
 

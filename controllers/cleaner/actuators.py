@@ -19,12 +19,10 @@ class Actuators:
         self.commands = {
             Action.CONTINUE: (forward, forward),
             Action.SLOW_DOWN: (forward / 2, forward / 2),
-            Action.STOP: (0.0, 0.0),
             Action.TURN_LEFT: (-turn, turn),
             Action.TURN_RIGHT: (turn, -turn),
             Action.BACK_UP: (-forward / 2, -forward / 2),
             Action.WAIT: (0.0, 0.0),
-            Action.REPLAN: (0.0, 0.0),
         }
         for motor in (self.left, self.right):
             motor.setPosition(float("inf"))

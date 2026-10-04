@@ -7,6 +7,7 @@ import platform
 import re
 import sys
 from dataclasses import asdict, replace
+from collections import deque
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -18,11 +19,13 @@ if str(ROOT) not in sys.path:
 
 from controllers.cleaner.actuators import Actuators
 from controllers.cleaner.brains.base import Action, Brain, Decision
-from controllers.cleaner.brains.rules import RuleBasedBrain
+from controllers.cleaner.brains import create_brain
 from controllers.cleaner.perception import Perception, require_device
 from controllers.cleaner.safety import SafetyLayer
 from experiment.config import Config
 from experiment.logger import RunLogger
+from experiment.environment import load_env
+from experiment.inference import PendingInference, infer
 
 
 def validate_world(robot: Any, config: Config, root: Path) -> None:
@@ -56,12 +59,23 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
         perception = Perception(robot, config.timestep_ms)
         safety = SafetyLayer(config.critical_distance_m, config.safety_release_distance_m,
                              stop_before_contact=config.stop_before_contact)
-        brain = brain if brain is not None else RuleBasedBrain(config.stop_distance_m, config.seed, config.decision_interval_ms)
+        load_env(root / ".env")
+        brain = brain if brain is not None else create_brain(config)
+        asynchronous = config.brain in ("kev", "laya", "jev")
+        pending = None
+        accepted_observation_time = None
+        active_decision_id = None
         logger = RunLogger(root, config)
         logger.context.update(model=brain.name, model_version=brain.version)
-        if config.scenario_id != "apartment_static":
+        if config.scenario_id != "apartment_static" or config.batch_mode:
             experiment_emitter = require_device(robot, "experiment lifecycle")
         hashes = logger.snapshot(root, config)
+        artifact = None
+        manifest_path = root / ".local_models/manifest.json"
+        if config.brain in ("kev", "laya") and manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text())
+            selected = manifest["models"][config.brain]
+            artifact = {**selected, **manifest["artifacts"][selected["path"]], "runtime": manifest["runtime"]}
         logger.write(
             "run_start", parameters=asdict(config), source_sha256=hashes,
             python_version=platform.python_version(),
@@ -71,6 +85,7 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
             available_actions=[action.value for action in Action],
             initial_simulation_time_s=robot.getTime(),
             ground_truth=None,
+            model_artifact=artifact, inference_mode="asynchronous" if asynchronous else "synchronous",
             ground_truth_file="ground_truth.jsonl" if experiment_emitter is not None else None,
         )
         if experiment_emitter is not None:
@@ -78,50 +93,102 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
                 "kind": "run_start", "directory_name": logger.directory.name,
                 "context": logger.context, "parameters": asdict(config),
             }, allow_nan=False).encode("utf-8"))
-        requested, applied = Action.STOP, Action.STOP
+        requested, applied = Action.WAIT, Action.WAIT
+        history = deque(maxlen=10)
+        waiting_since = 0.0
         interval_steps = config.decision_interval_ms // config.timestep_ms
-        print(f"Recording baseline to {logger.directory / 'steps.jsonl'}", flush=True)
+        print(f"Recording {brain.name} to {logger.directory / 'steps.jsonl'}", flush=True)
 
         while robot.getTime() < config.max_simulation_time_s:
             if robot.step(config.timestep_ms) == -1:
                 simulator_connected = False
                 break
             state = perception.read()
-            observation = perception.observe(state, applied, config.stop_distance_m)
+            observation = replace(
+                perception.observe(state, applied, config.stop_distance_m),
+                simulation_time_s=state.simulation_time_s,
+                waiting_duration_s=(state.simulation_time_s - waiting_since) if waiting_since is not None else 0.0,
+                decision_history=tuple(dict(item) for item in history),
+            )
             perception_end_ms = wall_ms()
             if state.contact_detected is not None:
                 contact_detected = bool(contact_detected or state.contact_detected)
             decision = None
             decision_start_ms = decision_end_ms = None
             model_input = None
-            if steps % interval_steps == 0:
+            rejection_reason = None
+            completed_id = None
+            if asynchronous and pending is not None:
+                result = pending.poll(state.simulation_time_s, config.decision_timeout_s, config.max_decision_age_s)
+                if result is not None:
+                    decision, rejection_reason = result
+                    completed_id = pending.decision_id
+                    model_input = pending.observation.to_dict()
+                    decision_start_ms = (pending.started - wall_origin) * 1000
+                    decision_end_ms = wall_ms()
+                    logger.write("decision_result", decision_id=completed_id, decision=asdict(decision),
+                                 model_input=model_input, observation_time_s=pending.simulation_time_s,
+                                 result_time_s=state.simulation_time_s,
+                                 accepted=rejection_reason is None and not decision.metadata.get("fallback", False),
+                                 rejection_reason=rejection_reason)
+                    requested = decision.action
+                    active_decision_id = completed_id
+                    accepted_observation_time = pending.simulation_time_s if rejection_reason is None and not decision.metadata.get("fallback") else None
+                if pending.expired and not pending.thread.is_alive():
+                    pending = None
+            # Defer a new async request if a result arrived on this timestep,
+            # so its actual applied action is recorded before the next snapshot.
+            if steps % interval_steps == 0 and (not asynchronous or (pending is None and decision is None)):
                 decisions += 1
-                model_input = observation.to_dict()
-                decision_start_ms = wall_ms()
-                try:
-                    decision = brain.decide(observation)
-                    if not isinstance(decision, Decision):
-                        raise ValueError("Brain must return a typed Decision")
-                    # Validate serializability before applying a requested action.
-                    json.dumps(asdict(decision), allow_nan=False)
-                except Exception as exc:
-                    fallbacks += 1
-                    decision = Decision(
-                        Action.STOP, brain.name,
-                        metadata={"fallback": True, "error_type": type(exc).__name__, "error": str(exc)},
-                    )
-                decision_end_ms = wall_ms()
-                decision = replace(decision, latency_ms=decision_end_ms - decision_start_ms)
-                requested = decision.action
+                if asynchronous:
+                    logger.write("decision_request", decision_id=decisions,
+                                 model_input=observation.to_dict(), observation_time_s=state.simulation_time_s)
+                    pending = PendingInference(brain, observation, state.simulation_time_s, decisions)
+                else:
+                    model_input = observation.to_dict()
+                    decision_start_ms = wall_ms()
+                    decision = infer(brain, observation)
+                    decision_end_ms = wall_ms()
+                    requested = decision.action
+                    active_decision_id = decisions
+            if decision is not None and decision.metadata.get("fallback"):
+                fallbacks += 1
+                if fallbacks == 1:
+                    code = decision.metadata.get("error_code", decision.metadata.get("error_type"))
+                    if code == "stale_observation":
+                        hint = f"Response observation exceeded max_decision_age_s={config.max_decision_age_s}; check inference latency and simulation speed."
+                    elif code == "deadline_exceeded":
+                        hint = f"Inference exceeded decision_timeout_s={config.decision_timeout_s}; check model latency."
+                    else:
+                        hint = "Check the model server and its configuration."
+                    print(f"{brain.name}: inference failed ({code}); applying WAIT. {hint}", flush=True)
+            expired_action = asynchronous and (accepted_observation_time is None or
+                state.simulation_time_s - accepted_observation_time > config.max_decision_age_s)
+            if expired_action:
+                requested = Action.WAIT
 
             safe = safety.apply(requested, state)
             applied = safe.action
+            if decision is not None:
+                history.append({
+                    "time_s": round(state.simulation_time_s, 3),
+                    "requested": decision.action.value, "applied": applied.value,
+                    "accepted": rejection_reason is None and not decision.metadata.get("fallback", False),
+                })
+            if applied == Action.WAIT:
+                if waiting_since is None:
+                    waiting_since = state.simulation_time_s
+            else:
+                waiting_since = None
             wheel_velocity = actuators.apply(applied)
             actuation_ms = wall_ms()
             logger.write(
                 "step", step_index=steps, simulation_time_s=state.simulation_time_s,
                 sensors=asdict(state), sensor_observation=observation.to_dict(),
-                model_input=model_input, decision_id=decisions,
+                model_input=model_input, decision_id=active_decision_id,
+                latest_request_id=decisions,
+                completed_decision_id=completed_id, decision_rejection_reason=rejection_reason,
+                waiting_for_fresh_decision=expired_action,
                 decision=asdict(decision) if decision is not None else None,
                 requested_action=requested, applied_action=applied,
                 safety_reason=safe.reason, safety_override=applied != requested,
@@ -137,7 +204,9 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
                     "actuation_command_wall_ms": actuation_ms,
                 },
                 ground_truth=None, frame_ref=None,
-                input_tokens=None, output_tokens=None, estimated_cost_usd=None,
+                input_tokens=decision.metadata.get("input_tokens") if decision else None,
+                output_tokens=decision.metadata.get("output_tokens") if decision else None,
+                estimated_cost_usd=decision.metadata.get("estimated_cost_usd") if decision else None,
             )
             steps += 1
         else:
@@ -147,7 +216,7 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
         raise
     finally:
         try:
-            actuators.apply(Action.STOP)
+            actuators.apply(Action.WAIT)
             # setVelocity buffers a command. Flush it without advancing physics.
             stop_command_flushed = simulator_connected and robot.step(0) != -1
             if logger is not None:
@@ -156,7 +225,7 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
                     simulation_time_s=robot.getTime(), steps=steps,
                     decisions=decisions, fallback_count=fallbacks,
                     bumper_contact_detected=contact_detected, collision=None,
-                    outcome="unscored", final_action=Action.STOP,
+                    outcome="unscored", final_action=Action.WAIT,
                     stop_command_flushed=stop_command_flushed,
                 )
         finally:
