@@ -22,10 +22,13 @@ class Config:
     safety_release_distance_m: float = 0.16
     max_simulation_time_s: float = 20.0
     results_dir: str = "results/raw"
+    stop_before_contact: bool = False
 
     def __post_init__(self) -> None:
         if self.brain != "rules":
             raise ValueError("Only the rules brain is implemented in this iteration")
+        if type(self.stop_before_contact) is not bool:
+            raise ValueError("stop_before_contact must be a bool")
         for name in ("experiment_id", "scenario_id", "results_dir"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"{name} must be a nonempty string")

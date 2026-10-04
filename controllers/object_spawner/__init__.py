@@ -1,0 +1,1 @@
+"""External, deterministic scene generator."""

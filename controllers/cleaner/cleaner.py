@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 from controllers.cleaner.actuators import Actuators
 from controllers.cleaner.brains.base import Action, Brain, Decision
 from controllers.cleaner.brains.rules import RuleBasedBrain
-from controllers.cleaner.perception import Perception
+from controllers.cleaner.perception import Perception, require_device
 from controllers.cleaner.safety import SafetyLayer
 from experiment.config import Config
 from experiment.logger import RunLogger
@@ -46,6 +46,7 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
     steps, decisions, fallbacks = 0, 0, 0
     contact_detected = None
     simulator_connected = True
+    experiment_emitter = None
     wall_origin = perf_counter()
 
     def wall_ms() -> float:
@@ -54,10 +55,12 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
     try:
         perception = Perception(robot, config.timestep_ms)
         safety = SafetyLayer(config.critical_distance_m, config.safety_release_distance_m,
-                             stop_before_contact=False)
+                             stop_before_contact=config.stop_before_contact)
         brain = brain if brain is not None else RuleBasedBrain(config.stop_distance_m, config.seed, config.decision_interval_ms)
         logger = RunLogger(root, config)
         logger.context.update(model=brain.name, model_version=brain.version)
+        if config.scenario_id != "apartment_static":
+            experiment_emitter = require_device(robot, "experiment lifecycle")
         hashes = logger.snapshot(root, config)
         logger.write(
             "run_start", parameters=asdict(config), source_sha256=hashes,
@@ -68,7 +71,13 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
             available_actions=[action.value for action in Action],
             initial_simulation_time_s=robot.getTime(),
             ground_truth=None,
+            ground_truth_file="ground_truth.jsonl" if experiment_emitter is not None else None,
         )
+        if experiment_emitter is not None:
+            experiment_emitter.send(json.dumps({
+                "kind": "run_start", "directory_name": logger.directory.name,
+                "context": logger.context, "parameters": asdict(config),
+            }, allow_nan=False).encode("utf-8"))
         requested, applied = Action.STOP, Action.STOP
         interval_steps = config.decision_interval_ms // config.timestep_ms
         print(f"Recording baseline to {logger.directory / 'steps.jsonl'}", flush=True)
@@ -158,9 +167,9 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=ROOT / "experiment/config.json")
+    parser.add_argument("--config", type=Path, default=ROOT / "experiment/configs/config.json")
     args = parser.parse_args()
-    config = Config.load(args.config)
+    config = Config.load(args.config if args.config.is_absolute() else ROOT / args.config)
     # Only this executable imports Webots; brains and data work offline.
     from controller import Robot
     run(Robot(), config)

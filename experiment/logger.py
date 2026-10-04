@@ -37,8 +37,9 @@ class RunLogger:
 
     def snapshot(self, root: Path, config: Config) -> dict[str, str]:
         paths = [root / "worlds/apartment.wbt"]
-        paths += sorted((root / "controllers/cleaner").rglob("*.py"))
+        paths += sorted((root / "controllers").rglob("*.py"))
         paths += sorted((root / "experiment").rglob("*.py"))
+        paths += sorted((root / "experiment/scenarios").glob("*.json"))
         hashes = {}
         for path in paths:
             relative = path.relative_to(root)
@@ -64,3 +65,13 @@ class RunLogger:
 
     def close(self) -> None:
         self.file.close()
+
+
+class GroundTruthLogger(RunLogger):
+    """Same record envelope, separate writer/file in an already-created run."""
+
+    def __init__(self, directory: Path, context: dict[str, Any]):
+        self.directory = directory
+        self.context = dict(context)
+        self.run_id = context["run_id"]
+        self.file = (directory / "ground_truth.jsonl").open("x", encoding="utf-8")

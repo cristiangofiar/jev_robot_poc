@@ -44,6 +44,7 @@ WorldInfo {
   ]
   basicTimeStep 16
   randomSeed 0
+  gravity 9.81
 }
 Viewpoint {
   orientation -0.4060317414729578 0.40603290835639455 0.8187035496735586 1.7695128936691449
@@ -82,6 +83,7 @@ DEF ROOF Solid {
     Shape {
       appearance PBRAppearance {
         baseColor 0.8 0.8 0.8
+        transparency 1
         baseColorMap ImageTexture {
           url [
             "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/roughcast.jpg"
@@ -104,6 +106,12 @@ Wall {
   translation 0 -0.65 0
   name "wall 1"
   size 0.3 1 2.4
+  appearance DEF TRANSPARENT_WALL PBRAppearance {
+    baseColor 0.8 0.8 0.8
+    transparency 0.95
+    roughness 1
+    metalness 0
+  }
 }
 Window {
   translation 0 -1.65 0
@@ -117,16 +125,19 @@ Wall {
   translation 0 -4.3 0
   name "wall 2"
   size 0.3 4.3 2.4
+  appearance USE TRANSPARENT_WALL
 }
 Wall {
   translation -9.9 -2.3 0
   name "wall 3"
   size 0.3 4.3 2.4
+  appearance USE TRANSPARENT_WALL
 }
 Wall {
   translation -9.9 -5.95 0
   name "wall 4"
   size 0.3 1 2.4
+  appearance USE TRANSPARENT_WALL
 }
 Door {
   translation -9.9 -4.95 0
@@ -145,12 +156,14 @@ Wall {
   rotation 0 0 1 1.5708
   name "wall 5"
   size 0.3 7.9 2.4
+  appearance USE TRANSPARENT_WALL
 }
 Wall {
   translation -9.4 0 0
   rotation 0 0 1 1.5708
   name "wall 6"
   size 0.3 1.3 2.4
+  appearance USE TRANSPARENT_WALL
 }
 Window {
   translation -8.25 0 0
@@ -166,6 +179,7 @@ Wall {
   rotation 0 0 1 1.5708
   name "wall 7"
   size 0.3 1.3 2.4
+  appearance USE TRANSPARENT_WALL
 }
 Door {
   translation -8.25 -6.6 0
@@ -186,11 +200,13 @@ Wall {
   rotation 0 0 1 1.5708
   name "wall 8"
   size 0.3 7.9 2.4
+  appearance USE TRANSPARENT_WALL
 }
 Wall {
   translation -3.3 -1.8 0
   name "wall 9"
   size 0.3 3.3 2.4
+  appearance USE TRANSPARENT_WALL
 }
 CeilingLight {
   translation -1.3341 -2.4706 2.4
@@ -549,7 +565,14 @@ DEF CLEANER Create {
   translation -4.65 -4.2 0.0449
   rotation 0 0 1 -3.12513
   controller "cleaner"
+  controllerArgs [ "--config" "experiment/configs/falling_object_close.json" ]
   bodySlot [
+    # One-way lifecycle metadata to the Supervisor, no ground truth receiver.
+    Emitter {
+      name "experiment lifecycle"
+      type "radio"
+      channel 42
+    }
     # A single +X ray, outside the body. Identity response in metres, no noise.
     DistanceSensor {
       translation 0.18 0 0.02
@@ -570,4 +593,17 @@ DEF CLEANER Create {
 CreateWall {
   translation -3.235 -3.5312 0
   rotation 0 0 1 -1.5707953071795862
+}
+DEF OBJECT_SPAWNER Robot {
+  name "experiment supervisor"
+  supervisor TRUE
+  controller "object_spawner"
+  controllerArgs [ "--config" "experiment/configs/falling_object_close.json" ]
+  children [
+    Receiver {
+      name "experiment lifecycle"
+      type "radio"
+      channel 42
+    }
+  ]
 }
