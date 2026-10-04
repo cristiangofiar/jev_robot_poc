@@ -1,0 +1,16 @@
+{
+  "experiment_id": "baseline_v1",
+  "scenario_id": "apartment_static",
+  "brain": "rules",
+  "seed": 0,
+  "timestep_ms": 16,
+  "decision_interval_ms": 64,
+  "forward_speed_m_s": 0.20,
+  "turn_wheel_speed_rad_s": 2.0,
+  "wheel_radius_m": 0.031,
+  "stop_distance_m": 0.45,
+  "critical_distance_m": 0.12,
+  "safety_release_distance_m": 0.16,
+  "max_simulation_time_s": 20.0,
+  "results_dir": "results/raw"
+}
