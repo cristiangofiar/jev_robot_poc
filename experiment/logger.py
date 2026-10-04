@@ -14,8 +14,18 @@ from experiment.config import Config
 class RunLogger:
     def __init__(self, root: Path, config: Config):
         self.run_id = uuid4().hex
-        self.directory = root / config.results_dir / self.run_id
-        self.directory.mkdir(parents=True, exist_ok=False)
+        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d_%H-%M-%S")
+        results = root / config.results_dir
+        results.mkdir(parents=True, exist_ok=True)
+        suffix = 0
+        while True:
+            name = timestamp if suffix == 0 else f"{timestamp}_{suffix}"
+            self.directory = results / name
+            try:
+                self.directory.mkdir()
+                break
+            except FileExistsError:
+                suffix += 1
         self.context = {
             "schema_version": 1,
             "experiment_id": config.experiment_id,

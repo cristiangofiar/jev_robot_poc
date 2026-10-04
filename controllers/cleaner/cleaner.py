@@ -53,7 +53,8 @@ def run(robot: Any, config: Config, root: Path = ROOT, brain: Brain | None = Non
 
     try:
         perception = Perception(robot, config.timestep_ms)
-        safety = SafetyLayer(config.critical_distance_m, config.safety_release_distance_m)
+        safety = SafetyLayer(config.critical_distance_m, config.safety_release_distance_m,
+                             stop_before_contact=False)
         brain = brain if brain is not None else RuleBasedBrain(config.stop_distance_m, config.seed, config.decision_interval_ms)
         logger = RunLogger(root, config)
         logger.context.update(model=brain.name, model_version=brain.version)

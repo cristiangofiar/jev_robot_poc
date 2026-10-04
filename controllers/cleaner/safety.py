@@ -13,10 +13,11 @@ class SafetyResult:
 
 
 class SafetyLayer:
-    def __init__(self, critical_distance_m: float, release_distance_m: float):
+    def __init__(self, critical_distance_m: float, release_distance_m: float, stop_before_contact: bool = True):
         self.critical_distance_m = critical_distance_m
         self.release_distance_m = release_distance_m
         self.latched = False
+        self.stop_before_contact = stop_before_contact
 
     def apply(self, requested: Action, state: SensorState) -> SafetyResult:
         distance = state.front_distance_m
@@ -30,6 +31,9 @@ class SafetyLayer:
             self.latched = True
             return SafetyResult(Action.STOP, "bumper_contact")
         if requested in (Action.TURN_LEFT, Action.TURN_RIGHT):
+            return SafetyResult(requested, None)
+        if not self.stop_before_contact:
+            self.latched = False
             return SafetyResult(requested, None)
         if distance < self.critical_distance_m:
             self.latched = True

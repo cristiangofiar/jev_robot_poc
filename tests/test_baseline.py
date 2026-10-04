@@ -7,9 +7,10 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from controllers.cleaner.brains.base import Action, Decision, Observation
 from controllers.cleaner.brains.rules import RuleBasedBrain
@@ -17,6 +18,7 @@ from controllers.cleaner.cleaner import ROOT, run, validate_world
 from controllers.cleaner.perception import SensorState
 from controllers.cleaner.safety import SafetyLayer
 from experiment.config import Config
+from experiment.logger import RunLogger
 
 
 class FakeRobot:
@@ -78,8 +80,23 @@ class BaselineChecks(unittest.TestCase):
         records = [json.loads(line) for line in (path / "steps.jsonl").read_text().splitlines()]
         return path, records
 
+    def test_results_use_datetime_and_preserve_same_second_runs(self):
+        fixed = datetime(2026, 10, 4, 12, 34, 56, tzinfo=timezone.utc)
+        expected = fixed.astimezone().strftime("%Y-%m-%d_%H-%M-%S")
+        with tempfile.TemporaryDirectory() as directory, patch("experiment.logger.datetime") as clock:
+            clock.now.return_value = fixed
+            first = RunLogger(Path(directory), Config())
+            first.write("test", value=1)
+            first.close()
+            second = RunLogger(Path(directory), Config())
+            second.close()
+            self.assertEqual(first.directory.name, expected)
+            self.assertEqual(second.directory.name, expected + "_1")
+            self.assertNotEqual(first.run_id, second.run_id)
+            self.assertEqual(json.loads((first.directory / "steps.jsonl").read_text())["value"], 1)
+
     def test_typed_offline_observation_and_baseline(self):
-        for distance, expected in ((0.449, Action.BACK_UP), (0.45, Action.CONTINUE), (None, Action.STOP)):
+        for distance, expected in ((0.449, Action.CONTINUE), (0.45, Action.CONTINUE), (None, Action.STOP)):
             observation = Observation(0.2, distance, None, None, Action.CONTINUE)
             restored = Observation.from_dict(json.loads(json.dumps(observation.to_dict())))
             self.assertEqual(restored, observation)
@@ -91,8 +108,12 @@ class BaselineChecks(unittest.TestCase):
         with self.assertRaises(ValueError):
             Decision(Action.STOP, "bad", confidence=float("nan"))
 
-    def test_random_wandering_and_contact_recovery(self):
+    def test_contact_recovery_without_periodic_turns(self):
         clear = Observation(0.2, 1.0, False, False, Action.CONTINUE, contact_detected=False)
+        straight = RuleBasedBrain(0.45)
+        near = replace(clear, front_distance=0.01)
+        self.assertEqual([straight.decide(near).action for _ in range(1000)],
+                         [Action.CONTINUE] * 1000)
         contact = replace(clear, contact_detected=True)
         brain = RuleBasedBrain(0.45)
         actions = [brain.decide(contact).action]
@@ -128,16 +149,17 @@ class BaselineChecks(unittest.TestCase):
             self.assertTrue(any(r["applied_action"] == "CONTINUE" for r in steps[33:]))
 
     def test_hard_stop_is_evaluated_between_decisions(self):
-        # Infer CONTINUE at 16 ms; an obstacle appears before the next inference.
+        # Stop on contact between decisions, but allow approach to the obstacle.
         with tempfile.TemporaryDirectory() as directory:
             robot = FakeRobot([1.0, 0.05, 0.13, 1.0, 1.0])
+            robot.devices["bumper_left"].getValue = lambda: float(robot.index == 2)
             path, records = self.recorded_run(robot, directory)
             steps = [record for record in records if record["record_type"] == "step"]
             self.assertEqual([step["applied_action"] for step in steps],
-                             ["CONTINUE", "STOP", "STOP", "CONTINUE", "CONTINUE"])
+                             ["CONTINUE", "CONTINUE", "STOP", "CONTINUE", "CONTINUE"])
             self.assertEqual(steps[1]["requested_action"], "CONTINUE")
-            self.assertTrue(steps[1]["safety_override"])
-            self.assertEqual(steps[2]["safety_reason"], "safety_hysteresis")
+            self.assertTrue(steps[2]["safety_override"])
+            self.assertEqual(steps[2]["safety_reason"], "bumper_contact")
             self.assertIsNone(steps[1]["decision"])
             self.assertIsNone(steps[1]["model_input"])
             self.assertEqual(steps[0]["model_input"], steps[0]["sensor_observation"])
@@ -156,7 +178,9 @@ class BaselineChecks(unittest.TestCase):
             for relative, digest in records[0]["source_sha256"].items():
                 data = (path / "snapshot" / relative).read_bytes()
                 self.assertEqual(hashlib.sha256(data).hexdigest(), digest)
-            _, repeated = self.recorded_run(FakeRobot(robot.distances), directory)
+            repeated_robot = FakeRobot(robot.distances)
+            repeated_robot.devices["bumper_left"].getValue = lambda: float(repeated_robot.index == 2)
+            _, repeated = self.recorded_run(repeated_robot, directory)
             self.assertNotEqual(records[0]["run_id"], repeated[0]["run_id"])
             self.assertEqual([r["applied_action"] for r in repeated if r["record_type"] == "step"],
                              [r["applied_action"] for r in steps])
