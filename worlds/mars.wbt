@@ -1,0 +1,101 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/nasa/protos/Sojourner.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Soil.proto"
+
+WorldInfo {
+  title "Mars sample mission — Sojourner"
+  info [ "Adapted from Cyberbotics R2025a NASA sojourner.wbt." ]
+  gravity 3.73
+  basicTimeStep 16
+  randomSeed 0
+  coordinateSystem "ENU"
+  contactProperties [ ContactProperties { maxContactJoints 21 } ]
+}
+Viewpoint {
+  orientation -0.2710194599656415 0.13292710308742464 0.9533513715229643 2.266820953023049
+  position 5.8 -6.2 5.0
+  near 0.05
+}
+TexturedBackground { texture "mars" }
+TexturedBackgroundLight { texture "mars" }
+Fog { color 0.5 0.2 0 fogType "EXPONENTIAL" visibilityRange 80 }
+DEF ROVER Sojourner {
+  translation 0 0 0.23
+  rotation 0 0 1 3.14159265359
+  controller "rover"
+  window "<generic>"
+  extensionSlot [
+    Pose {
+      translation -0.38 0 0.22
+      rotation 0 0 1 3.14159265359
+      children [
+        Camera {
+          name "front camera"
+          rotation 0 1 0 0.15
+          width 320 height 240 fieldOfView 1.9 near 0.02 far 8
+          recognition Recognition { maxRange 3.2 occlusion 1 }
+        }
+      ]
+    }
+    Lidar {
+      translation -0.38 0 0.17
+      rotation 0 0 1 3.14159265359
+      name "mission lidar"
+      horizontalResolution 360 fieldOfView 6.28318530718
+      projection "cylindrical" numberOfLayers 1
+      minRange 0.03 maxRange 4
+    }
+    GPS { name "mission gps" }
+    InertialUnit { name "mission imu" }
+    Compass { name "mission compass" }
+    Emitter { name "mission tx" channel 42 }
+    Receiver { name "mission rx" channel 43 }
+    Display { name "camera view" width 320 height 240 }
+  ]
+}
+Robot {
+  supervisor TRUE controller "mission_supervisor"
+  children [ Receiver { name "mission rx" channel 42 } Emitter { name "mission tx" channel 43 } ]
+}
+DEF BASE Solid {
+  translation 0 0 0.01
+  name "landing base" model "BASE"
+  recognitionColors [ 0.1 0.8 1 ]
+  children [
+    Shape { appearance PBRAppearance { baseColor 0.1 0.8 1 roughness 1 metalness 0 } geometry Cylinder { radius 0.65 height 0.012 } }
+    Pose { translation -0.55 0.6 0.4 children [
+      Shape { appearance PBRAppearance { baseColor 0.1 0.8 1 emissiveColor 0.02 0.2 0.3 } geometry Box { size 0.08 0.2 0.65 } }
+    ] }
+  ]
+}
+DEF S1 Solid {
+  translation 0.95 -0.85 0.20472
+  name "sample S1" model "S1" recognitionColors [ 1 0.25 0.2 ]
+  children [
+    Shape { appearance DEF COLOR_S1 PBRAppearance { baseColor 1 0.25 0.2 roughness 0.7 metalness 0 } geometry Sphere { radius 0.12 } }
+    Pose { translation 0 0 -0.1 children [ Shape { appearance USE COLOR_S1 geometry Cylinder { radius 0.035 height 0.2 } } ] }
+  ]
+}
+DEF S2 Solid {
+  translation 1.8 0.85 0.23829
+  name "sample S2" model "S2" recognitionColors [ 0.2 1 0.3 ]
+  children [
+    Shape { appearance DEF COLOR_S2 PBRAppearance { baseColor 0.2 1 0.3 roughness 0.7 metalness 0 } geometry Sphere { radius 0.12 } }
+    Pose { translation 0 0 -0.1 children [ Shape { appearance USE COLOR_S2 geometry Cylinder { radius 0.035 height 0.2 } } ] }
+  ]
+}
+DEF S3 Solid {
+  translation 2.65 -0.55 0.21383
+  name "sample S3" model "S3" recognitionColors [ 0.7 0.3 1 ]
+  children [
+    Shape { appearance DEF COLOR_S3 PBRAppearance { baseColor 0.7 0.3 1 roughness 0.7 metalness 0 } geometry Sphere { radius 0.12 } }
+    Pose { translation 0 0 -0.1 children [ Shape { appearance USE COLOR_S3 geometry Cylinder { radius 0.035 height 0.2 } } ] }
+  ]
+}
+DEF ROCK0 Solid { translation 1.35 -0.12 0.29708 name "rock 0" children [ Shape { appearance PBRAppearance { baseColor 0.55 0.3 0.18 roughness 1 metalness 0 } geometry DEF ROCK_SHAPE0 IndexedFaceSet { coord Coordinate { point [ -0.225 -0.24 -0.3 0.225 -0.24 -0.3 0.225 0.24 -0.3 -0.225 0.24 -0.3 -0.2025 -0.192 0.18 0.19125 -0.216 0.22499999999999998 0.18000000000000002 0.192 0.27 -0.1575 0.216 0.195 0 0 0.3 ] } coordIndex [ 0 3 2 1 -1 0 1 5 4 -1 1 2 6 5 -1 2 3 7 6 -1 3 0 4 7 -1 4 5 8 -1 5 6 8 -1 6 7 8 -1 7 4 8 -1 ] creaseAngle 0.35 } } ] boundingObject USE ROCK_SHAPE0 }
+DEF ROCK1 Solid { translation 2.45 1.55 0.29094 name "rock 1" children [ Shape { appearance PBRAppearance { baseColor 0.55 0.3 0.18 roughness 1 metalness 0 } geometry DEF ROCK_SHAPE1 IndexedFaceSet { coord Coordinate { point [ -0.25 -0.225 -0.275 0.25 -0.225 -0.275 0.25 0.225 -0.275 -0.25 0.225 -0.275 -0.225 -0.18000000000000002 0.165 0.2125 -0.2025 0.20625000000000002 0.2 0.18000000000000002 0.24750000000000003 -0.175 0.2025 0.17875000000000002 0 0 0.275 ] } coordIndex [ 0 3 2 1 -1 0 1 5 4 -1 1 2 6 5 -1 2 3 7 6 -1 3 0 4 7 -1 4 5 8 -1 5 6 8 -1 6 7 8 -1 7 4 8 -1 ] creaseAngle 0.35 } } ] boundingObject USE ROCK_SHAPE1 }
+DEF ROCK2 Solid { translation -0.6 -1.45 0.26401 name "rock 2" children [ Shape { appearance PBRAppearance { baseColor 0.55 0.3 0.18 roughness 1 metalness 0 } geometry DEF ROCK_SHAPE2 IndexedFaceSet { coord Coordinate { point [ -0.225 -0.2 -0.25 0.225 -0.2 -0.25 0.225 0.2 -0.25 -0.225 0.2 -0.25 -0.2025 -0.16000000000000003 0.15 0.19125 -0.18000000000000002 0.1875 0.18000000000000002 0.16000000000000003 0.225 -0.1575 0.18000000000000002 0.1625 0 0 0.25 ] } coordIndex [ 0 3 2 1 -1 0 1 5 4 -1 1 2 6 5 -1 2 3 7 6 -1 3 0 4 7 -1 4 5 8 -1 5 6 8 -1 6 7 8 -1 7 4 8 -1 ] creaseAngle 0.35 } } ] boundingObject USE ROCK_SHAPE2 }
+Solid { translation -2 -3 0 children [ Shape { appearance Soil { } geometry DEF GROUND ElevationGrid { xDimension 15 yDimension 13 xSpacing 0.5 ySpacing 0.5 height [ 0.00321 0.00352 0.00297 0.00169 -0.00000 -0.00169 -0.00297 -0.00352 -0.00321 -0.00211 -0.00050 0.00124 0.00267 0.00345 0.00338 0.01360 0.01492 0.01259 0.00717 -0.00000 -0.00717 -0.01259 -0.01492 -0.01360 -0.00895 -0.00211 0.00525 0.01132 0.01463 0.01435 0.02067 0.02268 0.01913 0.01090 -0.00000 -0.01090 -0.01913 -0.02268 -0.02067 -0.01360 -0.00321 0.00797 0.01720 0.02222 0.02180 0.02268 0.02487 0.02098 0.01196 -0.00000 -0.01196 -0.02098 -0.02487 -0.02268 -0.01492 -0.00352 0.00875 0.01887 0.02438 0.02391 0.01913 0.02098 0.01770 0.01009 -0.00000 -0.01009 -0.01770 -0.02098 -0.01913 -0.01259 -0.00297 0.00738 0.01592 0.02056 0.02017 0.01090 0.01196 0.01009 0.00575 -0.00000 -0.00575 -0.01009 -0.01196 -0.01090 -0.00717 -0.00169 0.00420 0.00907 0.01172 0.01149 -0.00000 -0.00000 -0.00000 -0.00000 0.00000 0.00000 0.00000 0.00000 0.00000 0.00000 0.00000 -0.00000 -0.00000 -0.00000 -0.00000 -0.01090 -0.01196 -0.01009 -0.00575 0.00000 0.00575 0.01009 0.01196 0.01090 0.00717 0.00169 -0.00420 -0.00907 -0.01172 -0.01149 -0.01913 -0.02098 -0.01770 -0.01009 0.00000 0.01009 0.01770 0.02098 0.01913 0.01259 0.00297 -0.00738 -0.01592 -0.02056 -0.02017 -0.02268 -0.02487 -0.02098 -0.01196 0.00000 0.01196 0.02098 0.02487 0.02268 0.01492 0.00352 -0.00875 -0.01887 -0.02438 -0.02391 -0.02067 -0.02268 -0.01913 -0.01090 0.00000 0.01090 0.01913 0.02268 0.02067 0.01360 0.00321 -0.00797 -0.01720 -0.02222 -0.02180 -0.01360 -0.01492 -0.01259 -0.00717 0.00000 0.00717 0.01259 0.01492 0.01360 0.00895 0.00211 -0.00525 -0.01132 -0.01463 -0.01435 -0.00321 -0.00352 -0.00297 -0.00169 0.00000 0.00169 0.00297 0.00352 0.00321 0.00211 0.00050 -0.00124 -0.00267 -0.00345 -0.00338 ] } } ] name "Mars terrain" boundingObject USE GROUND locked TRUE }

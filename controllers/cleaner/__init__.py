@@ -1,1 +1,0 @@
-"""Cleaner behavior-selection experiment."""

@@ -1,42 +1,22 @@
-"""Exercise the real adapter on identical offline sensor states; not a robot benchmark."""
-
+"""Probe the mission contract without starting Webots."""
 import argparse
 import json
-from dataclasses import asdict
 from pathlib import Path
-
-from controllers.cleaner.brains import create_brain
-from controllers.cleaner.brains.base import Action, Observation
-from experiment.config import Config
-from experiment.environment import load_env
-
-ROOT = Path(__file__).resolve().parent
+from mission.brain import Brain
+from mission.environment import load_env
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--brain", choices=("kev", "laya", "jev", "threshold", "rules"), required=True)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--timeout", type=float, default=30)
+    parser.add_argument('--brain', choices=('rules', 'laya', 'kev', 'jev'), required=True)
     args = parser.parse_args()
-    load_env(ROOT / ".env")
-    brain = create_brain(Config(brain=args.brain, decision_timeout_s=args.timeout))
-    samples = [
-        ("clear_from_stop", Observation(0.0, 2.0, False, False, Action.WAIT, contact_detected=False)),
-        ("clear_from_continue", Observation(0.0, 2.0, False, False, Action.CONTINUE, contact_detected=False)),
-        ("clear", Observation(0.4, 1.2, True, False, Action.CONTINUE, contact_detected=False)),
-        ("front_hazard", Observation(0.4, 0.08, True, True, Action.CONTINUE, contact_detected=False)),
-        ("contact", Observation(0.0, 0.02, True, True, Action.WAIT, contact_detected=True)),
-    ]
-    records = []
-    for name, observation in samples:
-        decision = brain.decide(observation)
-        records.append({"sample": name, "observation": observation.to_dict(), "decision": asdict(decision)})
-        print(f"{name}: {decision.action.value}, confidence={decision.confidence}, {decision.latency_ms:.1f} ms", flush=True)
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(records, indent=2, allow_nan=False) + "\n")
+    load_env(Path(__file__).resolve().parent / '.env')
+    brain = Brain(args.brain, timeout=30)
+    for inspected, collected in ((False, []), (True, []), (True, ['S1', 'S2', 'S3'])):
+        observation = {'simulation_s': 1, 'revision': 1, 'battery_pct': 90, 'candidates': [] if collected else [{'id': 'S1', 'distance_m': .6, 'inspected': inspected}],
+                       'collected': collected, 'delivered': [], 'sensors_valid': True, 'obstacle': False, 'history': []}
+        print(json.dumps(brain.decide(observation), indent=2))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

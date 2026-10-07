@@ -1,115 +1,109 @@
-"""Repeat runs in fresh Webots processes/projects with the same controlled seed sequence."""
-
+"""Launch a fresh Mars mission in installed Webots (macOS/Windows/Linux)."""
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
-from dataclasses import asdict, replace
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
-
-from experiment.config import Config
-from experiment.environment import load_env
-from experiment.scenario import FallingBoxScenario
+from mission.brain import Brain
+from mission.environment import load_env
 
 ROOT = Path(__file__).resolve().parent
 
 
-def prepare_batch(root: Path, config: Config, runs: int) -> Path:
-    if runs < 1:
-        raise ValueError("runs must be positive")
-    FallingBoxScenario.load(root, config)  # Validate the selected scenario before launch.
-    batch = root / "results/batches" / uuid4().hex
-    batch.mkdir(parents=True)
-    plan = []
-    for index in range(runs):
-        project = batch / "projects" / f"run_{index:03d}"
-        project.mkdir(parents=True)
-        for directory in ("controllers", "experiment"):
-            shutil.copytree(root / directory, project / directory,
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        for script in root.glob("*.py"):
-            shutil.copy2(script, project / script.name)
-        manifest = root / ".local_models/manifest.json"
-        if manifest.is_file():
-            (project / ".local_models").mkdir()
-            shutil.copy2(manifest, project / ".local_models/manifest.json")
-        effective = replace(config, seed=config.seed + index, batch_mode=True,
-                            experiment_id=batch.name, results_dir=str(batch / "raw"))
-        config_path = project / "experiment/configs/batch.json"
-        config_path.write_text(json.dumps(asdict(effective), indent=2) + "\n")
-        world_text = (root / "worlds/apartment.wbt").read_text()
-        world_text, seeds = re.subn(r"(?m)^(\s*randomSeed\s+)\d+\s*$", rf"\g<1>{effective.seed}", world_text)
-        world_text, controllers = re.subn(
-            r'controllerArgs\s*\[\s*"--config"\s*"[^"]+"\s*\]',
-            'controllerArgs [ "--config" "experiment/configs/batch.json" ]', world_text)
-        if seeds != 1 or controllers != 2:
-            raise ValueError("Expected one WorldInfo seed and two experiment controllerArgs")
-        (project / "worlds").mkdir()
-        world = project / "worlds/apartment.wbt"
-        world.write_text(world_text)
-        plan.append({"index": index, "seed": effective.seed, "brain": effective.brain,
-                     "world": str(world), "config": asdict(effective)})
-    (batch / "plan.json").write_text(json.dumps({"simulation_mode": "realtime", "runs": plan}, indent=2) + "\n")
-    return batch
+def find_webots():
+    configured = os.environ.get('WEBOTS_EXECUTABLE')
+    if configured and Path(configured).is_file():
+        return configured
+    candidates = [Path('/Applications/Webots.app/Contents/MacOS/webots')]
+    if os.environ.get('WEBOTS_HOME'):
+        home = Path(os.environ['WEBOTS_HOME'])
+        candidates += [home / 'msys64/mingw64/bin/webots.exe', home / 'webots.exe', home / 'Contents/MacOS/webots', home / 'webots']
+    if os.environ.get('ProgramFiles'):
+        candidates.append(Path(os.environ['ProgramFiles']) / 'Webots/msys64/mingw64/bin/webots.exe')
+    for path in candidates:
+        if path.is_file():
+            return str(path)
+    found = shutil.which('webots')
+    if found:
+        return found
+    raise FileNotFoundError('Set WEBOTS_EXECUTABLE to your installed Webots executable')
 
 
-def execute_batch(batch: Path, executable: str, timeout_s: float) -> list[dict]:
-    if not Path(executable).is_file():
-        raise FileNotFoundError("Set WEBOTS_EXECUTABLE in .env to your installed Webots executable")
-    version = subprocess.run([executable, "--version"], capture_output=True, text=True, timeout=30, check=True)
-    version_text = version.stdout.strip().removeprefix("Webots version: ")
-    child_env = {**os.environ, "WEBOTS_VERSION": version_text}
-    (batch / "simulator.json").write_text(json.dumps({"executable": executable, "version": version_text}, indent=2) + "\n")
-    statuses = []
-    for run in json.loads((batch / "plan.json").read_text())["runs"]:
-        with (batch / f"webots_{run['index']:03d}.log").open("w") as log:
-            try:
-                process = subprocess.run([executable, "--batch", "--mode=realtime", "--no-rendering",
-                                          "--stdout", "--stderr", run["world"]],
-                                         stdout=log, stderr=subprocess.STDOUT, timeout=timeout_s, env=child_env)
-                status = {"index": run["index"], "exit_code": process.returncode, "timed_out": False}
-            except subprocess.TimeoutExpired:
-                status = {"index": run["index"], "exit_code": None, "timed_out": True}
-        statuses.append(status)
-        (batch / "execution.json").write_text(json.dumps(statuses, indent=2) + "\n")
-        print(f"run {run['index']}: {status}", flush=True)
-    return statuses
+def summarize(directory):
+    records = [json.loads(line) for line in (directory / 'steps.jsonl').read_text().splitlines()]
+    truth = [json.loads(line) for line in (directory / 'ground_truth.jsonl').read_text().splitlines()]
+    ends = [r for r in records if r['type'] == 'end']
+    responses = [r for r in records if r['type'] == 'response']
+    result = {'outcome': ends[-1]['outcome'] if ends else 'incomplete', 'valid': bool(ends and any(r['type'] == 'end' for r in truth)),
+              'accepted_decisions': sum(r['rejection'] is None and r['decision'].get('choice') is not None for r in responses),
+              'fallbacks': [r['rejection'] for r in responses if r['rejection']],
+              'safety_interventions': sum(r['type'] == 'safety' and r['reason'] is not None for r in records),
+              'obstacle_contact_steps': sum(r['type'] == 'trajectory' and bool(r['obstacle_contacts']) for r in truth),
+              'latencies_ms': [round(r['latency_ms'], 1) for r in responses if r['rejection'] is None],
+              'rejected_wait_ms': [{'reason': r['rejection'], 'wait_ms': round(r['latency_ms'], 1)} for r in responses if r['rejection']],
+              'late_latencies_ms': [round(r['latency_ms'], 1) for r in records if r['type'] == 'late_response'],
+              'local_route_failures': sum(r['type'] == 'fallback' and r['reason'] == 'no_route' for r in records) + sum(r['type'] == 'action' and r['fallback'] == 'no_route' for r in records),
+              'physical_outcome': ends[-1] if ends else None}
+    (directory / 'summary.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=ROOT / "experiment/configs/falling_object_close.json")
-    parser.add_argument("--brain", choices=("rules", "threshold", "kev", "laya", "jev"), default="rules")
-    parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--scenario", choices=("apartment_static", "falling_object_close"))
-    parser.add_argument("--webots")
-    parser.add_argument("--timeout", type=float, default=120)
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument('--brain', choices=('rules', 'laya', 'kev', 'jev', 'slow'), default='rules')
+    parser.add_argument('--webots')
+    parser.add_argument('--mode', choices=('realtime', 'fast', 'pause'))
+    parser.add_argument('--test', choices=('mission', 'sensors', 'motion'), default='mission')
+    parser.add_argument('--duration', type=float, default=900)
+    parser.add_argument('--timeout', type=float, default=1200)
+    parser.add_argument('--deadline', type=float, default=2)
+    parser.add_argument('--max-age', type=float, default=3)
+    parser.add_argument('--delay', type=float, default=0, help='Injected inference delay for fallback verification')
+    parser.add_argument('--no-rendering', action='store_true')
+    parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
-    load_env(ROOT / ".env")
-    config = replace(Config.load(args.config), brain=args.brain, seed=args.seed)
-    if args.scenario:
-        config = replace(config, scenario_id=args.scenario)
-    if not args.dry_run:
-        from controllers.cleaner.brains import create_brain
-        brain = create_brain(config)  # Missing Jev credentials fail before simulator startup.
-    batch = prepare_batch(ROOT, config, args.runs)
-    print(f"Prepared {batch}", flush=True)
-    if not args.dry_run:
-        from controllers.cleaner.brains.base import Action, Observation
-        # Keep cold Metal compilation/connection setup outside the scored window.
-        warmup = brain.decide(Observation(0.0, 2.0, False, False, Action.WAIT, contact_detected=False))
-        (batch / "warmup.json").write_text(json.dumps(asdict(warmup), indent=2, allow_nan=False) + "\n")
-        statuses = execute_batch(batch, args.webots or os.environ.get("WEBOTS_EXECUTABLE", ""), args.timeout)
-        from experiment.metrics import analyze
-        analyze(batch)
-        if any(item["exit_code"] != 0 for item in statuses):
-            raise SystemExit("Some repetitions failed; inspect execution.json and Webots logs")
+    if min(args.duration, args.timeout, args.deadline, args.max_age) <= 0 or args.delay < 0:
+        parser.error('Time limits must be positive; delay must be nonnegative')
+    load_env(ROOT / '.env')
+    executable = args.webots or find_webots()
+    mode = args.mode or ('fast' if args.brain == 'rules' else 'realtime')
+    directory = ROOT / 'results' / (datetime.now().strftime('%Y%m%d_%H%M%S') + '_' + args.brain + '_' + uuid4().hex[:6])
+    directory.mkdir(parents=True)
+    child_env = {**os.environ, 'MARS_RUN_DIR': str(directory), 'MARS_BRAIN': args.brain, 'MARS_TEST': args.test,
+                 'MARS_DURATION_S': str(args.duration), 'MARS_BATCH': '1', 'MARS_DEADLINE_S': str(args.deadline),
+                 'MARS_MAX_AGE_S': str(args.max_age), 'MARS_TEST_DELAY_S': str(args.delay)}
+    command = [executable, '--batch', '--stdout', '--stderr', '--port=1235', '--mode=' + mode]
+    if args.no_rendering:
+        command.append('--no-rendering')
+    command.append(str(ROOT / 'worlds/mars.wbt'))
+    (directory / 'launch.json').write_text(json.dumps({'brain': args.brain, 'test': args.test, 'mode': mode, 'duration_s': args.duration,
+                                                       'deadline_s': args.deadline, 'max_age_s': args.max_age, 'delay_s': args.delay}, indent=2) + '\n')
+    print(f'Run: {directory}', flush=True)
+    if args.dry_run:
+        print(json.dumps(command))
+        return
+    if args.brain in ('laya', 'kev', 'jev'):
+        observation = {'simulation_s': 0, 'revision': 0, 'battery_pct': 100, 'candidates': [], 'collected': [], 'delivered': [], 'sensors_valid': True, 'obstacle': False, 'history': []}
+        answer = Brain(args.brain, timeout=30).decide(observation)
+        (directory / 'warmup.json').write_text(json.dumps(answer, indent=2) + '\n')
+    version = subprocess.run([executable, '--version'], capture_output=True, text=True, timeout=30, check=True)
+    child_env['WEBOTS_VERSION'] = version.stdout.strip()
+    with (directory / 'webots.log').open('w') as output:
+        try:
+            result = subprocess.run(command, env=child_env, stdout=output, stderr=subprocess.STDOUT, timeout=args.timeout)
+        except subprocess.TimeoutExpired:
+            raise SystemExit('Webots wall deadline exceeded; see ' + str(directory / 'webots.log'))
+    if result.returncode != 0 or not (directory / 'steps.jsonl').exists() or not (directory / 'ground_truth.jsonl').exists():
+        raise SystemExit('Webots failed; see ' + str(directory / 'webots.log'))
+    summary = summarize(directory)
+    print(json.dumps(summary, indent=2), flush=True)
+    expected = {'mission': 'success', 'sensors': 'sensors_complete', 'motion': 'motion_complete'}[args.test]
+    if not summary['valid'] or summary['outcome'] != expected:
+        raise SystemExit('Mission/check incomplete; inspect run logs')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

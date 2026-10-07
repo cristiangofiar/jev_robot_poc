@@ -1,4 +1,4 @@
-"""Serve one downloaded decision model on loopback with the native Metal runtime."""
+"""Serve one downloaded decision model on loopback with the native llama.cpp runtime."""
 
 import argparse
 import json
@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from experiment.environment import load_env
+from mission.environment import load_env
 
 ROOT = Path(__file__).resolve().parent
 
@@ -24,13 +24,13 @@ def command(brain: str) -> list[str]:
     if (url.scheme != "http" or url.hostname != "127.0.0.1" or url.port is None
             or url.path not in ("", "/") or url.username or url.password or url.query or url.fragment):
         raise ValueError("Local serving requires http://127.0.0.1:PORT")
-    args = [str(ROOT / manifest["runtime"]["executable"]),
-            "--model", str(ROOT / manifest["models"][brain]["path"]),
+    args = [str(Path(os.environ.get("LLAMA_SERVER", "")) if os.environ.get("LLAMA_SERVER") else ROOT / manifest["runtime"]["executable"]),
+            "--model", str(Path(os.environ.get(brain.upper() + "_MODEL_PATH", "")) if os.environ.get(brain.upper() + "_MODEL_PATH") else ROOT / manifest["models"][brain]["path"]),
             "--alias", "kev-4b" if brain == "kev" else "laya",
             "--host", "127.0.0.1", "--port", str(url.port),
-            "--ctx-size", "1024" if brain == "kev" else "512",
+            "--ctx-size", "2048" if brain == "kev" else "1024",
             "--batch-size", "512", "--ubatch-size", "512", "--parallel", "1",
-            "--gpu-layers", "99"]
+            "--gpu-layers", os.environ.get("LOCAL_GPU_LAYERS", "99")]
     if os.environ.get("LOCAL_MODEL_API_KEY"):
         # llama.cpp also reads this key from the environment, so it stays out of argv.
         os.environ["LLAMA_API_KEY"] = os.environ["LOCAL_MODEL_API_KEY"]
