@@ -1,0 +1,22 @@
+{
+  "model": "laya",
+  "answers": {
+    "mission": {
+      "type": "choice",
+      "choice": "FORWARD",
+      "probabilities": {
+        "STOP": 0.13604395937345232,
+        "FORWARD": 0.26915451341351126,
+        "TURN_LEFT": 0.16268907733386892,
+        "TURN_RIGHT": 0.14437977751199219,
+        "RETURN_TO_BASE": 0.12892971212579912,
+        "INSPECT_S1": 0.1588029602413762
+      },
+      "confidence": 0.12298541609621352
+    }
+  },
+  "usage": {
+    "input_tokens": 1046,
+    "output_tokens": 0
+  }
+}

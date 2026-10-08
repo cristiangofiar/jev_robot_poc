@@ -9,3 +9,7 @@ results/
 .venv/
 *codegraph
 worlds/.*.wbproj
+
+# Generated physical interaction fixture (tests/interaction_world.py).
+worlds/interaction.wbt
+worlds/safety_feedback.wbt

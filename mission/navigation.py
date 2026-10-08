@@ -1,112 +1,84 @@
-"""Small observed occupancy grid + A*. Coordinates in metres, ENU, yaw in radians."""
-import heapq
+"""Sensor summaries, public-region coverage and immediate protection; no path planner."""
 import math
 
-CELL = 0.15
 BOUNDS = (-1.0, 3.6, -2.1, 2.1)
-RADIUS = 0.43
+BASE = (0, 0)
+SECTORS = {"front": 0, "left": math.pi / 2, "right": -math.pi / 2, "rear": math.pi}
 
 
 def wrap(angle):
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
 
-def cell(point):
-    return tuple(round(v / CELL) for v in point[:2])
+def inside(point, margin=0):
+    return BOUNDS[0] + margin <= point[0] <= BOUNDS[1] - margin and BOUNDS[2] + margin <= point[1] <= BOUNDS[3] - margin
 
 
-def inside(point):
-    return BOUNDS[0] <= point[0] <= BOUNDS[1] and BOUNDS[2] <= point[1] <= BOUNDS[3]
+def relative(position, yaw, point):
+    return {"distance_m": round(math.dist(position[:2], point[:2]), 3),
+            "bearing_deg": round(math.degrees(wrap(math.atan2(point[1] - position[1], point[0] - position[0]) - yaw)), 1)}
 
 
-class Navigator:
+def lidar_summary(points):
+    sectors = {name: 4.0 for name in SECTORS}
+    for x, y, z in points:
+        if not all(math.isfinite(v) for v in (x, y, z)):
+            continue  # Infinity is a clear ray to the configured maximum range.
+        distance = math.hypot(x, y)
+        # Exclude self returns using rover coordinates, preserving external front returns.
+        if x < 0 and math.hypot(x + .38, y) < .48:
+            continue
+        angle = math.atan2(y, x)
+        for name, direction in SECTORS.items():
+            if abs(wrap(angle - direction)) <= math.pi / 4:
+                sectors[name] = min(sectors[name], distance)
+    return {key: round(value, 3) for key, value in sectors.items()}
+
+
+class Coverage:
+    """Visited neighbourhoods on a public grid; never certifies sample discovery."""
     def __init__(self):
-        self.obstacles = set()
-        self.path = []
-        self.last_plan = -10
-        self.goal = None
+        self.cells = [(BOUNDS[0] + .2 + .4 * x, BOUNDS[2] + .2 + .4 * y)
+                      for x in range(11) for y in range(10)]
+        self.visited = set()
 
-    def observe(self, position, yaw, ranges, markers):
-        # ponytail: static 2D map for gentle slopes; full transforms/clearing for rough or dynamic terrain.
-        # One horizontal lidar layer. Infinity denotes clear space to maxRange.
-        origin = (position[0] + .38 * math.cos(yaw), position[1] + .38 * math.sin(yaw))
-        for x, y, z in ranges:
-            if not all(math.isfinite(v) for v in (x, y, z)) or math.hypot(x, y) < .03:
-                continue
-            point = (origin[0] + x * math.cos(yaw) - y * math.sin(yaw), origin[1] + x * math.sin(yaw) + y * math.cos(yaw))
-            if math.dist(point, position[:2]) < .6:
-                continue  # Reject rover self returns before building the external map.
-            if math.hypot(*point) < .65:
-                continue  # The public landing pad is a known traversable home zone.
-            if any(math.dist(point, m[:2]) < .25 for m in markers):
-                continue  # Noncolliding sample markers are camera targets, not rocks.
-            if inside(point):
-                self.obstacles.add(cell(point))
+    def observe(self, position):
+        self.visited.update(i for i, point in enumerate(self.cells) if math.dist(position[:2], point) <= .65)
 
-    def plan(self, position, goal):
-        blocked = set()
-        inflation = math.ceil(RADIUS / CELL)
-        for x, y in self.obstacles:
-            for dx in range(-inflation, inflation + 1):
-                for dy in range(-inflation, inflation + 1):
-                    if math.hypot(dx, dy) * CELL <= RADIUS:
-                        blocked.add((x + dx, y + dy))
-        start, end = cell(position), cell(goal)
-        if end in blocked:
-            return []
-        frontier = [(0, start)]
-        previous, costs = {start: None}, {start: 0}
-        while frontier:
-            _, here = heapq.heappop(frontier)
-            if here == end:
-                path = []
-                while here is not None:
-                    path.append((here[0] * CELL, here[1] * CELL))
-                    here = previous[here]
-                return path[::-1]
-            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
-                nxt = (here[0] + dx, here[1] + dy)
-                if nxt in blocked or not inside((nxt[0] * CELL, nxt[1] * CELL)):
-                    continue
-                if dx and dy and ((here[0] + dx, here[1]) in blocked or (here[0], here[1] + dy) in blocked):
-                    continue
-                cost = costs[here] + math.hypot(dx, dy)
-                if cost < costs.get(nxt, math.inf):
-                    costs[nxt], previous[nxt] = cost, here
-                    heapq.heappush(frontier, (cost + math.dist(nxt, end), nxt))
-        return []
+    def state(self, position, yaw):
+        novelty = {}
+        for name, angle in SECTORS.items():
+            novelty[name] = sum(i not in self.visited and math.dist(position[:2], point) < 2 and
+                               abs(wrap(math.atan2(point[1] - position[1], point[0] - position[0]) - yaw - angle)) < math.pi / 4
+                               for i, point in enumerate(self.cells))
+        return {"visited_pct": round(100 * len(self.visited) / len(self.cells), 1), "unvisited_nearby_sectors": novelty,
+                "measure": "0.4m public grid centres within 0.65m of GPS track; not visual coverage or proof of all discoveries"}
 
-    def command(self, position, yaw, goal, now):
-        if math.dist(position[:2], goal[:2]) < .12:
-            return "arrived", 0
-        if self.goal != goal or now - self.last_plan > 1:
-            self.path = self.plan(position, goal)
-            if self.path:
-                self.path.append(tuple(goal[:2]))
-            self.goal, self.last_plan = goal, now
-        while len(self.path) > 1 and math.dist(position[:2], self.path[0]) < .18:
-            self.path.pop(0)
-        if not self.path:
-            return "no_route", 0
-        target = self.path[min(1, len(self.path) - 1)]
-        error = wrap(math.atan2(target[1] - position[1], target[0] - position[0]) - yaw)
-        if abs(error) > .22:
-            return "spin", 1 if error > 0 else -1
-        return "forward", max(-1, min(1, error / .22))
+    def frontier(self, position):
+        remaining = [point for i, point in enumerate(self.cells) if i not in self.visited and inside(point, .45)]
+        return min(remaining, key=lambda point: math.dist(position[:2], point)) if remaining else None
 
 
-def safety(position, roll, pitch, ranges, command):
-    if not all(math.isfinite(v) for v in (*position, roll, pitch)) or not ranges or any(math.isnan(d) or d < 0 for d in ranges):
+def safety(position, roll, pitch, sectors, command, yaw=0, valid=True):
+    if not valid or not all(math.isfinite(v) for v in (*position, roll, pitch, yaw, *sectors.values())):
         return "invalid_sensors"
     if max(abs(roll), abs(pitch)) > .4:
         return "excessive_tilt"
     if not inside(position):
         return "region_boundary"
-    # Forward lidar origin extends 0.38 m beyond the rover reference point.
-    middle = len(ranges) // 2
-    front = min(ranges[middle - 30:middle + 31])
-    if command == "forward" and front < .28:
-        return "front_obstacle"
-    if command == "spin" and min(ranges) < .22:
+    if command == "forward":
+        projected = [position[0] + .46 * math.cos(yaw), position[1] + .46 * math.sin(yaw)]
+        if not inside(projected, .05):
+            return "boundary_ahead"
+        if sectors["front"] < .32:
+            return "front_obstacle"
+    if command == "reverse":
+        projected = [position[0] - .46 * math.cos(yaw), position[1] - .46 * math.sin(yaw)]
+        if not inside(projected, .05):
+            return "boundary_behind"
+        # Lidar sits 0.38 m ahead of the rover centre; protect the rear body too.
+        if sectors["rear"] < .8:
+            return "rear_obstacle"
+    if command == "spin" and min(sectors.values()) < .24:
         return "spin_clearance"
     return None
